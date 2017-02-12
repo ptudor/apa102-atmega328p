@@ -92,6 +92,7 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 #define SERIAL_TXD 1
 #define INT0_PPS 2
 #define INT1_SW 3
+#define MCU_GPS_EN 4
 #define LED_GREEN 5
 #define LED_WHITE 6
 #define DEBOUNCED_D7 7
@@ -110,6 +111,8 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 
 #endif
 
+#define MCU_I2C_NODE_ADDRESS 8
+#define GPS_ENABLED 1
 
 #define NUM_LEDS 90
 #define LED_TYPE    APA102
@@ -381,26 +384,40 @@ void juggle() {
 }
 
 void setup() {
-   // eight second watchdog timer
+  // Eight second watchdog timer
   wdt_enable(WDTO_8S);
+  // These three pins are PWM LEDs
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_WHITE, OUTPUT);
+  // This is high or low to enable or disable the voltage regulator GPS chip is on
+  pinMode(MCU_GPS_EN, OUTPUT);
+  // These two pins receive interrupts
   pinMode(INT0_PPS, INPUT);
   pinMode(INT1_SW, INPUT);
+  // These pins have ALPS pots
   pinMode(TRIMPOT_A1, INPUT);
+  pinMode(TRIMPOT_A2, INPUT);
+  // Open hardware serial communication, GPS Rx and FTDI Tx.
   Serial.begin(9600);
+  // init i2c for everything else
+  Wire.begin(MCU_I2C_NODE_ADDRESS);
+  // "Be sure to wake up device right as I2C goes up otherwise you'll have NACK issues"
+  sha204dev.init();
+  // power on the GPS, or power it off. Whatever.
+  if (GPS_ENABLED == 1) {
+    digitalWrite(MCU_GPS_EN, HIGH);
+  } else {
+    digitalWrite(MCU_GPS_EN, LOW);
+  }
+  // Blink the red LED to acknowledge reset/boot
   for (int i = 0; i < 5; i++) {
     digitalWrite(LED_RED, HIGH);
     delay(50);
     digitalWrite(LED_RED, LOW);
     delay(100);
   }
-
-  // init i2c for everything else
-  Wire.begin(8);  // Activate I2C network
-  sha204dev.init(); // Be sure to wake up device right as I2C goes up otherwise you'll have NACK issues
-
+  // Temperature sensor
   sensor9808.setResolution(MCP9804::R_0_0625);
   int tempC_9808 = val_to_temp(sensor9808.readTemperature());
 
@@ -417,18 +434,21 @@ void setup() {
   time_t sunRise = sun_rise(1);
 */
 
+  // begin FastLED with values defined above for pins, colors, type, and quantity
   FastLED.addLeds<LED_TYPE,MOSI,SCK,COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(BRIGHTNESS);
+  // Dunno.
   set_max_power_in_volts_and_milliamps(5, 3000);               // FastLED Power management set at 5V, 1500mA.
 
+  // This displays the RGB color order test so you can set the value correctly
   RGBCalibrate();
   delay(1500);
   
-  // begin listening for PPS
+  // begin listening for PPS and button pushes
   attachInterrupt(0, pps_interrupt, RISING);
   attachInterrupt(1, momentary_switch_interrupt, RISING);
-  
-  Wire.onRequest(requestEvent); // Request attention of other node
+  // begin listening for i2c requests
+  Wire.onRequest(requestEvent);
 
 }
 
@@ -461,7 +481,9 @@ void loop() {
      }
 
 
-
+  // This section is what makes colors show up. The value of the 
+  // variable in this case/switch is set by the interrupt handler
+  // attached to a physical momentary switch.
   switch (momentary_switch_loop) {
     case 1:
       januaryWithGlitter();
