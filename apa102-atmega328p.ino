@@ -56,6 +56,7 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 */
 
 #define DEBUG 0
+//#define WRITE_TIMEZONE_EEPROM
 
 #ifndef _HEADERS_JEMMA
 #define _HEADERS_JEMMA
@@ -72,6 +73,7 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 #include <TinyGPS++.h>        // GPS Library
 // https://github.com/JChristensen/MCP9808
 // https://github.com/JChristensen/MCP79412RTC
+#include <Timezone.h>    //https://github.com/JChristensen/Timezone
 #include "FastLED.h"
 //#include <sha204_library.h>
 #include <MCP9804.h>
@@ -114,10 +116,20 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 #define MCU_I2C_NODE_ADDRESS 8
 #define GPS_ENABLED 1
 
+static byte eepromSavedPattern = 32;
+
 #define NUM_LEDS 90
 #define LED_TYPE    APA102
 #define COLOR_ORDER BGR
+// default brightness at boot
 #define BRIGHTNESS          128
+// these are for if you don't actually want the full range of 0-255
+#define BRIGHTNESS_MIN      192
+#define BRIGHTNESS_MAX      32
+byte brightness = BRIGHTNESS;
+byte actualBrightness = BRIGHTNESS;
+byte previousBrightness = BRIGHTNESS;
+
 #define FRAMES_PER_SECOND  120
 CRGB leds[NUM_LEDS];
 
@@ -147,36 +159,56 @@ namespace TinyGpsPlusPlus {
 static const uint32_t GPSBaud = 9600;     
 unsigned int x = 0;
 uint8_t gHue = 0; // rotating "base color" used by many of the patterns
+uint8_t sHue = 160; // 160 +-20 is blue
+uint8_t cHue = 0; // rotating "base color" used by many of the patterns
 
 int tempCelcius;
 byte gpsError = 0;
 byte rtcError = 0;
 
-volatile byte ffr_loop = 0;
-void ffr_interrupt() {
-  ffr_loop++;
-  if ( ffr_loop > 3) {
-      ffr_loop= 0;
-    }
-}
+#ifdef WRITE_TIMEZONE_EEPROM
+//US Pacific Time Zone (Las Vegas, Los Angeles)
+TimeChangeRule usPDT = {"PDT", Second, dowSunday, Mar, 2, -420};
+TimeChangeRule usPST = {"PST", First, dowSunday, Nov, 2, -480};
+Timezone usPT(usPDT, usPST);
+Timezone myTZ(usPDT, usPST);
+#endif
+/*
+//Central European Time (Frankfurt, Paris)
+TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120};     //Central European Summer Time
+TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60};       //Central European Standard Time
+Timezone CE(CEST, CET);
+//US Eastern Time Zone (New York, Detroit)
+TimeChangeRule usEDT = {"EDT", Second, Sun, Mar, 2, -240};  //Eastern Daylight Time = UTC - 4 hours
+TimeChangeRule usEST = {"EST", First, Sun, Nov, 2, -300};   //Eastern Standard Time = UTC - 5 hours
+Timezone usET(usEDT, usEST);
+*/
+
+//If TimeChangeRules are already stored in EEPROM...
+#ifndef WRITE_TIMEZONE_EEPROM
+Timezone myTZ(100);       //assumes rules stored at EEPROM address 100
+#endif
+
+TimeChangeRule *tcr;        //pointer to the time change rule, use to get TZ abbrev
+time_t utc, local;
 
 volatile time_t currentEpoch;
 volatile byte pps_loop = 0;
 volatile byte momentary_switch_loop = 0;
+byte previous_momentary_switch_loop = 0;
 
-void momentary_switch_interrupt(){
-    momentary_switch_loop++;
-    // mod 4 gives wraparound.
-    momentary_switch_loop = momentary_switch_loop % 6;
+void momentary_switch_interrupt() {
+  momentary_switch_loop++;
+  // mod N gives wraparound.
+  momentary_switch_loop = momentary_switch_loop % 8;
 }
 
-void pps_interrupt(){
-    pps_loop++;
-    if ( pps_loop > 53) {
-        pps_loop = 0;
-    }
+void pps_interrupt() {
+  pps_loop++;
+  if ( pps_loop > 53) {
+    pps_loop = 0;
+  }
 }
-
 
 time_t epochConverter(TinyGPSDate &d, TinyGPSTime &t) {
   // make the object we'll use
@@ -202,32 +234,56 @@ time_t epochConverter(TinyGPSDate &d, TinyGPSTime &t) {
   return 1320001666;
 }
 
-
 void setTimeFromGps(time_t currentEpoch) {
+  Serial.println(F("Attempting to update RTC from GPS."));
   // this is our time elements object,
   tmElements_t tm;
-  RTC.write(tm); // or use the set below. write is tmElements and set is time_t
   // that we "break" into components, like Hour/Minute/Second
   breakTime(currentEpoch, tm);
+  RTC.write(tm); // or use the set below. write is tmElements and set is time_t
   // because tm.Year is YYYY - 1970, and we want tmYY + 1970
   int year2k = tmYearToCalendar(tm.Year);
   Serial.println(year2k);   //set the system time to 23h31m30s on 13Feb2009
 
   setTime(tm.Hour, tm.Minute, tm.Second, tm.Day, tm.Month, year2k);   //set the system time to 23h31m30s on 13Feb2009
   // this line commented out because of the RTC.write above.
-  // RTC.set(now());                     //set the RTC from the system time
+  RTC.set(now());                     //set the RTC from the system time
 
   rtcError = 0;
   if(timeStatus()!= timeSet)  {
-     Serial.println("Unable to sync with the RTC");
+     Serial.println(F("Unable to set RTC from GPS."));
      rtcError = 1;
   } else {
-     Serial.println("Just set RTC from GPS okay.");
+     Serial.println(F("Set RTC from GPS okay."));
      rtcError = 0;
   }
 }
 
+void saveSettings(const int eepromAddress, const int newValue) {
+  int eepromValue = EEPROM.read(eepromAddress);
+  // only write if new value and saved value are different
+  if  (eepromValue != newValue ) {
+    EEPROM.write(eepromAddress, newValue);
+    Serial.print(F("EEPROM Update: "));
+    Serial.print(newValue);
+  }
+}
 
+// this is the left pot sans switch
+int readBrightnessFromPot() {
+  int valueBrightness = analogRead(TRIMPOT_A1);
+  valueBrightness = map(valueBrightness, 0, 1024, 0, 256);     // scale it to use value between 0 and 255
+  valueBrightness = constrain(valueBrightness, 0, 255);
+  return valueBrightness;
+}
+
+// this is the right pot con switch
+int readColorFromPot() {
+  int valueColor = analogRead(TRIMPOT_A2);
+  valueColor = map(valueColor, 0, 1024, 0, 256);     // scale it to use value between 0 and 255
+  valueColor = constrain(valueColor, 0, 255);
+  return valueColor;
+}
 
 // https://github.com/FastLED/FastLED/blob/master/examples/RGBCalibrate/RGBCalibrate.ino
 void RGBCalibrate() {
@@ -242,26 +298,26 @@ void RGBCalibrate() {
 }
 
 void setSystemClockFromRTC() {
-
     //setSyncProvider() causes the Time library to synchronize with the
     //external RTC by calling RTC.get() every five minutes by default.
     setSyncProvider(RTC.get);
     
     if(timeStatus()!= timeSet)  {
-     Serial.println("Unable to sync with the RTC");
+     Serial.println(F("Unable to set system clock from RTC"));
      rtcError = 1;
      setTime(12, 34, 30, 29, 2, 2016);   //set the system time to 12h34m30s on 29Feb2016
      //RTC.adjust(DateTime(__DATE__, __TIME__));
      RTC.set(now());                     //set the RTC from the system time
-} else {
-     Serial.println("RTC has set the system time");
+  } else {
+     Serial.println(F("RTC has set the system time"));
      rtcError = 0;     
      //ptsat RTC.set(now());                     //set the RTC from the system time
+  }
 }
 
-
+void extraRTC() {
     byte rtcID[8];
-   RTC.idRead(rtcID);
+    RTC.idRead(rtcID);
     Serial.print(F("RTC ID = "));
     for (int i=0; i<8; ++i) {
         if (rtcID[i] < 16) Serial.print('0');
@@ -270,7 +326,43 @@ void setSystemClockFromRTC() {
     Serial.println("");
     Serial.print (F("Calibration Register = "));
     Serial.print (RTC.calibRead() );
+}
 
+byte runningTimedSleep = 0;
+
+void checkCron() {
+  //tmElements_t tm;
+  utc = now();
+  local = myTZ.toLocal(utc, &tcr);
+  // wakeup
+  if ( ( hour(local) == 17 ) && (minute(local) == 0 ) ) {
+    actualBrightness = previousBrightness;
+  } 
+  // sleep the first time
+  if ( ( hour(local) == 23 ) && (minute(local) == 50 ) ) {
+    runningTimedSleep = 1 ;
+  }
+  // sleep the second time if we interrupted the first
+  if ( ( hour(local) == 2 ) && (minute(local) == 0 ) ) {
+    runningTimedSleep = 1 ;
+  }
+}
+
+
+// https://github.com/JChristensen/MCP79412RTC/blob/master/examples/rtcSet2/rtcSet2.pde
+void printTimeFromRTC(time_t tm) {
+    Serial.print(hour(tm), DEC);
+    Serial.print(':');
+    Serial.print(minute(tm),DEC);
+    Serial.print(':');
+    Serial.print(second(tm),DEC);
+    Serial.print(' ');
+    Serial.print(year(tm), DEC);
+    Serial.print('-');
+    Serial.print(month(tm), DEC);
+    Serial.print('-');
+    Serial.print(day(tm), DEC);
+    Serial.println();
 }
 
 byte wakeupSha204() {
@@ -309,43 +401,55 @@ void rainbow()
   fill_rainbow( leds, NUM_LEDS, gHue, 7);
 }
 
-void xmas() 
-{
-  // FastLED's built-in rainbow generator
- // fill_rainbow( leds, NUM_LEDS, gHue, 7);
- fill_solid(leds, NUM_LEDS, CRGB::DarkGreen);
+void xmas() {
+  fill_solid(leds, NUM_LEDS, CRGB::DarkGreen);
   fill_gradient(leds,0,CHSV(0,255,255),19,CHSV(85,255,120),SHORTEST_HUES); 
   fill_gradient(leds,70,CHSV(85,255,120),89,CHSV(0,255,255),SHORTEST_HUES); 
 }
 
-
-void pink() 
-{
-  // FastLED's built-in rainbow generator
- // fill_rainbow( leds, NUM_LEDS, gHue, 7);
+void pink() {
  fill_solid(leds, NUM_LEDS, CRGB::LightPink);
 }
+ 
+byte sDelta = 0;
+void blueish() {
+  sHue = 160; // blue
+  // fetch a random number between 0 and 15.
+  sDelta = random8(16);
+  // if result is odd number add; if even subtract
+  if (sDelta % 2) { 
+    sHue = sHue + sDelta;
+  } else {
+    sHue = sHue - sDelta;      
+  }
+  //   
+  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 255, 192);
+}
 
+void speckled() {
+  // first fetch a random number between 0 and 15.
+  sDelta = random8(16);
+  // if result is odd number add; if even subtract
+  if (sDelta % 2) { 
+    sHue = cHue + sDelta;
+  } else {
+    sHue = cHue - sDelta;      
+  }
+  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 255, 192);
+}
 
-void january() 
-{
-  // FastLED's built-in rainbow generator
- // fill_rainbow( leds, NUM_LEDS, gHue, 7);
+void january() {
   fill_solid(leds, NUM_LEDS, CRGB::DarkBlue);
   fill_gradient(leds,0,CHSV(0,255,255),39,CHSV(85,255,120),SHORTEST_HUES); 
   fill_gradient(leds,50,CHSV(85,255,120),89,CHSV(0,255,255),SHORTEST_HUES); 
 }
 
-void januaryWithGlitter() 
-{
-  // built-in FastLED rainbow, plus some random sparkly glitter
+void januaryWithGlitter() {
   january();
   addGlitter(10);
 }
 
-void xmasWithGlitter() 
-{
-  // built-in FastLED rainbow, plus some random sparkly glitter
+void xmasWithGlitter() {
   xmas();
   addGlitter(10);
 }
@@ -364,6 +468,12 @@ void addGlitter( fract8 chanceOfGlitter)
   }
 }
 
+void sinelonColorPot(){
+  // a colored dot sweeping back and forth, with fading trails
+  //fadeToBlackBy( leds, NUM_LEDS, 20);
+  int pos = beatsin16(13,0,NUM_LEDS);
+  leds[pos] += CHSV( cHue, 255, 192);
+}
 
 void sinelon()
 {
@@ -384,31 +494,34 @@ void juggle() {
 }
 
 void setup() {
-  // Eight second watchdog timer
+  // Eight second watchdog timer to reset the controller if we get stuck
   wdt_enable(WDTO_8S);
-  // These three pins are PWM LEDs
+  // These three pins are PWM (pulse-width modulation) ports with LEDs, ie intensity is software controlled
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_WHITE, OUTPUT);
-  // This is high or low to enable or disable the voltage regulator GPS chip is on
+  // This is high to enable or low to disable the voltage regulator GPS chip is on.
   pinMode(MCU_GPS_EN, OUTPUT);
-  // These two pins receive interrupts
+  // These two pins receive interrupts, first from the GPS Pulse-Per-Second, second from the switch on the front
   pinMode(INT0_PPS, INPUT);
   pinMode(INT1_SW, INPUT);
-  // These pins have ALPS pots
+  // These pins have ALPS pots, aka rotary knobs. 
   pinMode(TRIMPOT_A1, INPUT);
   pinMode(TRIMPOT_A2, INPUT);
-  // Open hardware serial communication, GPS Rx and FTDI Tx.
+  // Open hardware serial communication, GPS Rx and FTDI Tx. In Windows, connect with Tera Term.
   Serial.begin(9600);
+  Serial.println(F("Hello World!"));
   // init i2c for everything else
-  Wire.begin(MCU_I2C_NODE_ADDRESS);
+  Wire.begin(MCU_I2C_NODE_ADDRESS); // Node Address is us, set to 8 by default above.
   // "Be sure to wake up device right as I2C goes up otherwise you'll have NACK issues"
   sha204dev.init();
-  // power on the GPS, or power it off. Whatever.
+  // power on the GPS, or power it off. Whatever. 
   if (GPS_ENABLED == 1) {
     digitalWrite(MCU_GPS_EN, HIGH);
+    Serial.println(F("GPS Enabled"));
   } else {
     digitalWrite(MCU_GPS_EN, LOW);
+    Serial.println(F("GPS Disabled"));
   }
   // Blink the red LED to acknowledge reset/boot
   for (int i = 0; i < 5; i++) {
@@ -418,11 +531,28 @@ void setup() {
     delay(100);
   }
   // Temperature sensor
+  Serial.print(F("Current Temperature: "));
   sensor9808.setResolution(MCP9804::R_0_0625);
   int tempC_9808 = val_to_temp(sensor9808.readTemperature());
+  Serial.println(tempC_9808);
 
-
-  setSystemClockFromRTC();
+#ifdef WRITE_TIMEZONE_EEPROM
+    myTZ.writeRules(100);    //write rules to EEPROM address 100
+#endif
+  
+  if ( RTC.isRunning() ) {
+    time_t powerDown, powerUp;    //power outage timestamps
+    if ( RTC.powerFail(&powerDown, &powerUp) ) {
+     Serial.print(F("Power Down: "));
+     printTimeFromRTC(&powerDown);
+     Serial.print(F("Power Up: "));
+     printTimeFromRTC(&powerDown);
+    }
+    setSystemClockFromRTC();
+  } else {
+    Serial.println(F("RTC not running yet. Time?"));
+  }
+  extraRTC();
 /*  
  * avr-libc-2.0 style  
  *  
@@ -441,6 +571,7 @@ void setup() {
   set_max_power_in_volts_and_milliamps(5, 3000);               // FastLED Power management set at 5V, 1500mA.
 
   // This displays the RGB color order test so you can set the value correctly
+  Serial.println(F("Calibrating RGB: 1 Red, 2 Green, 3 Blue."));
   RGBCalibrate();
   delay(1500);
   
@@ -450,70 +581,121 @@ void setup() {
   // begin listening for i2c requests
   Wire.onRequest(requestEvent);
 
+  // fetch last pattern we displayed before power loss
+  momentary_switch_loop = EEPROM.read(eepromSavedPattern);
+  previous_momentary_switch_loop = momentary_switch_loop;
+
 }
 
 unsigned long previousMillis =  millis();
 byte lastUniquePulse = 0;
 byte noFix = 1;
 
+byte previousColor = cHue;
+
 //byte gpsError = 1;
 // the loop function runs over and over again forever
 void loop() {
   EVERY_N_MILLISECONDS( 53 ) { gHue++; } // slowly cycle the "base color" through the rainbow was 20
-
-      noFix = 0; // reset it please
-    gpsError = 0; // reset
+  EVERY_N_SECONDS( 60 ) { checkCron(); }
   
-     if (gps.satellites.value() <= 3 ) {
-        noFix = 1;
-        gpsError = 1;
-     }
-    digitalWrite(LED_RED, noFix);
+  gpsError, noFix = 0; // reset
+  if (gps.satellites.value() <= 3 ) {
+    noFix = 1;
+    gpsError = 1;
+  }
+  digitalWrite(LED_RED, noFix);
 
-      if (pps_loop == 1 ) {
-    //convert GPS time to Epoch time
-    currentEpoch =  epochConverter(gps.date, gps.time);
-    // and display it on the LCD
-    Serial.println("main loop trying to setTimeFromGps"); 
-    setTimeFromGps(currentEpoch);
-      pps_loop++; // otherwise it runs several times during the second
+  switch (pps_loop) {
+    case 3:
+      pps_loop++;
+      setTimeFromGps(epochConverter(gps.date, gps.time));
+      break;
+    case 7:
+      pps_loop++;
+      printTimeFromRTC(now());
+      break;
+    default: 
+      break;
+  }
+  
+  // if the previous counter for button presses is different from present value
+  if ( previous_momentary_switch_loop != momentary_switch_loop) {
+    // write the new value to the eeprom for the next power loss
+    saveSettings(eepromSavedPattern, momentary_switch_loop);
+    // and reset our counter here
+    previous_momentary_switch_loop = momentary_switch_loop;
+    Serial.print(F("Detected a button press: "));
+    Serial.println(momentary_switch_loop);
+  }
 
-     }
+  brightness = readBrightnessFromPot();
+  if ( previousBrightness != brightness) {
+    Serial.print(F("Detected brightness: "));
+    Serial.println(brightness);
+    previousBrightness = brightness;
+    FastLED.setBrightness(constrain(brightness, BRIGHTNESS_MIN, BRIGHTNESS_MAX));
+    // also disable the sleep timer if it was manually turned off just now
+    actualBrightness = brightness;
+    runningTimedSleep = 0 ;
+  }
 
+  if ( runningTimedSleep ) {
+    EVERY_N_SECONDS ( 9 ) {
+      // we ignore the brightness setting from the pot
+      actualBrightness--;
+      FastLED.setBrightness(actualBrightness);
+      Serial.println(actualBrightness);
+    }
+  }
+
+  cHue = readColorFromPot();
+  if ( previousColor != cHue) {
+    Serial.print(F("Detected cHue: "));
+    Serial.println(cHue);
+    previousColor = cHue;
+  }
 
   // This section is what makes colors show up. The value of the 
   // variable in this case/switch is set by the interrupt handler
   // attached to a physical momentary switch.
   switch (momentary_switch_loop) {
     case 1:
-      januaryWithGlitter();
+      blueish();
       break;
     case 2:
-      xmasWithGlitter();
+      speckled();
       break;
     case 3:
-      sinelon();
+      januaryWithGlitter();
       break;
     case 4:
+      xmasWithGlitter();
+      break;
+    case 5:
+      sinelon();
+      break;
+    case 6:
+      pink();
+      break;
+    case 7:
       juggle();
       break;
     default: 
-      pink();
-    break;
+      sinelonColorPot();
+      break;
   }
 
-
-
+  // this is a kind of visible watchdog for the main loop
   int outVal = yforx(x);
   analogWrite(LED_WHITE, outVal);
-   x++;
+  x++;
  
+  FastLED.show();
+  // pause main loop 29ms
+  TinyGpsPlusPlus::smartDelay(29);
 
-   FastLED.show();  
-   // pause main loop 17ms
-   TinyGpsPlusPlus::smartDelay(29);
-
-    wdt_reset();
+  wdt_reset();
 }
 
 
