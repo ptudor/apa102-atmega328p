@@ -159,13 +159,15 @@ namespace TinyGpsPlusPlus {
 static const uint32_t GPSBaud = 9600;     
 unsigned int x = 0;
 uint8_t gHue = 0; // rotating "base color" used by many of the patterns
-uint8_t sHue = 160; // 160 +-20 is blue
-uint8_t cHue = 0; // rotating "base color" used by many of the patterns
+uint8_t sHue = 160; // static base color. 160 +-20 is blue
+uint8_t cHue = 0; // trimpot controlled base color
 
 int tempCelcius;
 byte gpsError = 0;
 byte rtcError = 0;
 
+// the first time you upload the code, set this so it can be written to eeprom.
+// then unset it and upload the code again. saves 64 bytes of RAM when you do.
 #ifdef WRITE_TIMEZONE_EEPROM
 //US Pacific Time Zone (Las Vegas, Los Angeles)
 TimeChangeRule usPDT = {"PDT", Second, dowSunday, Mar, 2, -420};
