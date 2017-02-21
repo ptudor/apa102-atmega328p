@@ -329,6 +329,7 @@ void extraRTC() {
 }
 
 byte runningTimedSleep = 0;
+byte runningTimedWake = 0;
 
 void checkCron() {
   //tmElements_t tm;
@@ -336,7 +337,7 @@ void checkCron() {
   local = myTZ.toLocal(utc, &tcr);
   // wakeup
   if ( ( hour(local) == 17 ) && (minute(local) == 0 ) ) {
-    actualBrightness = previousBrightness;
+    runningTimedWake = 1;
   } 
   // sleep the first time
   if ( ( hour(local) == 23 ) && (minute(local) == 50 ) ) {
@@ -573,7 +574,7 @@ void setup() {
   // This displays the RGB color order test so you can set the value correctly
   Serial.println(F("Calibrating RGB: 1 Red, 2 Green, 3 Blue."));
   RGBCalibrate();
-  delay(1500);
+  delay(800);
   
   // begin listening for PPS and button pushes
   attachInterrupt(0, pps_interrupt, RISING);
@@ -638,14 +639,24 @@ void loop() {
     // also disable the sleep timer if it was manually turned off just now
     actualBrightness = brightness;
     runningTimedSleep = 0 ;
+    runningTimedWake = 0 ;
   }
 
-  if ( runningTimedSleep ) {
-    EVERY_N_SECONDS ( 9 ) {
-      // we ignore the brightness setting from the pot
-      actualBrightness--;
+  EVERY_N_SECONDS ( 9 ) {
+    // if someone actually touches the trimpot, we exit these conditions.
+    if ( runningTimedSleep ) {
+      // we ignore the brightness setting from the pot with actualBrightness
+      if (actualBrightness > 0) {
+        actualBrightness--;
+      }
       FastLED.setBrightness(actualBrightness);
-      Serial.println(actualBrightness);
+    }
+
+    if ( runningTimedWake ) {
+      if (actualBrightness < brightness) {
+        actualBrightness++;
+      }
+      FastLED.setBrightness(actualBrightness);
     }
   }
 
@@ -698,16 +709,20 @@ void loop() {
   wdt_reset();
 }
 
-
-void requestEvent()
-{
-  //Wire.write(transmitCommands,MAX_SENT_BYTES);  
+void requestEvent() {
+  // when someone asks us for bytes, send these.
+  // for now, basically just respond with the current program
+  byte responseArray[4];
+  responseArray[0] = momentary_switch_loop;
+  responseArray[1] = cHue;
+  responseArray[2] = actualBrightness;
+  responseArray[3] = 0;
+  Wire.write(responseArray, 4);
 }
 
 int yforx(int x) {
   return (-240*abs(sin(x*0.01)))+255; //sine wave
 }
-
 
 float val_to_temp(int val)
 {
