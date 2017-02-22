@@ -79,9 +79,10 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 #include <MCP9804.h>
 // use time_t sun_rise and time_t sun_set someday instead. http://www.nongnu.org/avr-libc/user-manual/group__avr__time.html
 // #include <sunMoon.h> // https://github.com/sfrwmaker/sunMoon
-#include <SHA204.h> // https://github.com/nuskunetworks/arduino_sha204/
-#include <SHA204Definitions.h>
-#include <SHA204I2C.h>
+//#include <SHA204.h> // https://github.com/nuskunetworks/arduino_sha204/
+//#include <SHA204Definitions.h>
+//#include <SHA204I2C.h>
+#include <cryptoauth.h> // https://github.com/cryptotronix/cryptoauth-arduino
 
 
 #endif
@@ -137,7 +138,7 @@ MCP9804 sensor9808(0x18); // default address 0x1f
 
 TinyGPSPlus gps;
 
-SHA204I2C sha204dev;
+//SHA204I2C sha204dev;
 
 //atsha204Class sha204(sha204Pin);
 
@@ -160,11 +161,15 @@ static const uint32_t GPSBaud = 9600;
 unsigned int x = 0;
 uint8_t gHue = 0; // rotating "base color" used by many of the patterns
 uint8_t sHue = 160; // static base color. 160 +-20 is blue
+uint8_t sValue = 192; // static base color. 160 +-20 is blue
 uint8_t cHue = 0; // trimpot controlled base color
 
 int tempCelcius;
 byte gpsError = 0;
 byte rtcError = 0;
+
+AtEcc108 sha = AtEcc108();
+//AtSha204 sha = AtSha204();
 
 // the first time you upload the code, set this so it can be written to eeprom.
 // then unset it and upload the code again. saves 64 bytes of RAM when you do.
@@ -368,6 +373,7 @@ void printTimeFromRTC(time_t tm) {
     Serial.println();
 }
 
+/*
 byte wakeupSha204() {
   uint8_t response[SHA204_RSP_SIZE_MIN];
   byte returnValue;
@@ -396,7 +402,52 @@ byte serialNumberSha204() {
  
   return returnValue;
 }
+*/
 
+void atmelRandom() {
+    /* If you haven't personalized your device yet, you will recieve
+     * this on your serial terminal:
+       ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000
+       Success
+       Otherwise, you'll get actual random bytes.
+    */
+    if (0 == sha.getRandom(0)){
+        Serial.println("Success with sha.getRandom:");
+        sha.rsp.dumpHex(&Serial);
+        //random16_add_entropy(sha.rsp);
+    }
+    else{
+        Serial.println("Failure on sha.getRandom:");
+    }
+}
+
+
+// https://github.com/thiseldo/cryptoauth-arduino/blob/master/examples/Crypto_Examples/Crypto_Examples.ino
+/** menuGetInfo - The Chip Info menu action, display info about the chip
+ */
+void menuGetInfo() {
+  Serial.println(F("\n\rChip Info"));
+  uint8_t serialNum[9];
+
+  Serial.print(F("Serial Number: "));
+  uint8_t ret = sha.getSerialNumber();
+  if ( ret == 0 ) {
+    const uint8_t *bufPtr = sha.rsp.getPointer();
+    int bufLen = sha.rsp.getLength();
+    // Display serial number and add to serialNum buffer
+    for (int i = 0; i < bufLen; i++ ) {
+      if ( i < 9)
+        serialNum[i] = bufPtr[i];
+      if ( bufPtr[i] < 16 ) Serial.print(F("0"));
+      Serial.print(bufPtr[i], HEX);
+    }
+    Serial.println();
+  } else {
+    Serial.print(F("Failed! "));
+    Serial.println(ret, HEX);
+  }
+
+}
 
 void rainbow() 
 {
@@ -414,31 +465,43 @@ void pink() {
  fill_solid(leds, NUM_LEDS, CRGB::LightPink);
 }
  
-byte sDelta = 0;
+byte hDelta = 0;
+byte vDelta = 0;
 void blueish() {
   sHue = 160; // blue
+  sValue = 192; // 75%
   // fetch a random number between 0 and 15.
-  sDelta = random8(16);
+  hDelta = random8(16);
+  vDelta = random8(64);
   // if result is odd number add; if even subtract
-  if (sDelta % 2) { 
-    sHue = sHue + sDelta;
+  if (hDelta % 2) { 
+    sHue = sHue + hDelta;
   } else {
-    sHue = sHue - sDelta;      
+    sHue = sHue - hDelta;      
+  }
+  if (vDelta % 2) { 
+    sValue = sValue + vDelta;
+  } else {
+    sValue = sValue - vDelta;      
+  }
+  if( hDelta == 0 ) {
+    leds[NUM_LEDS] = CHSV( sHue, 192, 192);
   }
   //   
-  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 255, 192);
+  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 192, sValue);
 }
 
+byte sDelta = 0;
 void speckled() {
-  // first fetch a random number between 0 and 15.
-  sDelta = random8(16);
+  // first fetch a random number between 0 and 31.
+  sDelta = random8(32);
   // if result is odd number add; if even subtract
   if (sDelta % 2) { 
     sHue = cHue + sDelta;
   } else {
     sHue = cHue - sDelta;      
   }
-  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 255, 192);
+  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 192, 192);
 }
 
 void january() {
@@ -517,7 +580,8 @@ void setup() {
   // init i2c for everything else
   Wire.begin(MCU_I2C_NODE_ADDRESS); // Node Address is us, set to 8 by default above.
   // "Be sure to wake up device right as I2C goes up otherwise you'll have NACK issues"
-  sha204dev.init();
+  //sha204dev.init();
+  sha.enableDebug(&Serial);
   // power on the GPS, or power it off. Whatever. 
   if (GPS_ENABLED == 1) {
     digitalWrite(MCU_GPS_EN, HIGH);
