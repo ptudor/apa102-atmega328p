@@ -125,8 +125,8 @@ static byte eepromSavedPattern = 32;
 // default brightness at boot
 #define BRIGHTNESS          128
 // these are for if you don't actually want the full range of 0-255
-#define BRIGHTNESS_MIN      192
-#define BRIGHTNESS_MAX      32
+#define BRIGHTNESS_MIN      32
+#define BRIGHTNESS_MAX      192
 byte brightness = BRIGHTNESS;
 byte actualBrightness = BRIGHTNESS;
 byte previousBrightness = BRIGHTNESS;
@@ -488,7 +488,7 @@ void blueish() {
     leds[NUM_LEDS] = CHSV( sHue, 192, 192);
   }
   //   
-  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 192, sValue);
+  leds[ random16(NUM_LEDS) ] =  CHSV( sHue, 192, sValue);
 }
 
 byte sDelta = 0;
@@ -501,7 +501,7 @@ void speckled() {
   } else {
     sHue = cHue - sDelta;      
   }
-  leds[ random16(NUM_LEDS) ] +=  CHSV( sHue, 192, 192);
+  leds[ random16(NUM_LEDS) ] =  CHSV( sHue, 192, 192);
 }
 
 void january() {
@@ -641,7 +641,8 @@ void setup() {
   Serial.println(F("Calibrating RGB: 1 Red, 2 Green, 3 Blue."));
   RGBCalibrate();
   delay(800);
-  
+  FastLED.clear();
+
   // begin listening for PPS and button pushes
   attachInterrupt(0, pps_interrupt, RISING);
   attachInterrupt(1, momentary_switch_interrupt, RISING);
@@ -692,6 +693,8 @@ void loop() {
     saveSettings(eepromSavedPattern, momentary_switch_loop);
     // and reset our counter here
     previous_momentary_switch_loop = momentary_switch_loop;
+    // and let's clear the old pattern.
+    FastLED.clear();
     Serial.print(F("Detected a button press: "));
     Serial.println(momentary_switch_loop);
   }
