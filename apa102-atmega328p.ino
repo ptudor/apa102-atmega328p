@@ -572,7 +572,7 @@ void speckled() {
   sDelta = random8(32);
   // if result is odd number add; if even subtract
   if (sDelta % 2) { 
-    sHue = cHue + sDelta;
+    sHue = (cHue + sDelta) & 255;
   } else {
     sHue = cHue - sDelta;      
   }
