@@ -56,7 +56,7 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 */
 
 #define DEBUG 0
-//#define WRITE_TIMEZONE_EEPROM
+#define WRITE_TIMEZONE_EEPROM
 
 #ifndef _HEADERS_JEMMA
 #define _HEADERS_JEMMA
@@ -79,10 +79,7 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 #include <MCP9804.h>
 // use time_t sun_rise and time_t sun_set someday instead. http://www.nongnu.org/avr-libc/user-manual/group__avr__time.html
 // #include <sunMoon.h> // https://github.com/sfrwmaker/sunMoon
-//#include <SHA204.h> // https://github.com/nuskunetworks/arduino_sha204/
-//#include <SHA204Definitions.h>
-//#include <SHA204I2C.h>
-#include <cryptoauth.h> // https://github.com/cryptotronix/cryptoauth-arduino
+#include <cryptoauth.h> // https://github.com/thiseldo/cryptoauth-arduino
 
 
 #endif
@@ -117,7 +114,7 @@ There's a solder jumper to connect the mega328's AREF to 5V.
 #define MCU_I2C_NODE_ADDRESS 8
 #define GPS_ENABLED 1
 
-static byte eepromSavedPattern = 32;
+static const uint8_t eepromSavedPattern = 32;
 
 #define NUM_LEDS 90
 #define LED_TYPE    APA102
@@ -127,9 +124,9 @@ static byte eepromSavedPattern = 32;
 // these are for if you don't actually want the full range of 0-255
 #define BRIGHTNESS_MIN      32
 #define BRIGHTNESS_MAX      192
-byte brightness = BRIGHTNESS;
-byte actualBrightness = BRIGHTNESS;
-byte previousBrightness = BRIGHTNESS;
+uint8_t brightness = BRIGHTNESS;
+uint8_t actualBrightness = BRIGHTNESS;
+uint8_t previousBrightness = BRIGHTNESS;
 
 #define FRAMES_PER_SECOND  120
 CRGB leds[NUM_LEDS];
@@ -168,7 +165,7 @@ int tempCelcius;
 byte gpsError = 0;
 byte rtcError = 0;
 
-AtEcc108 sha = AtEcc108();
+AtEccX08 ecc = AtEccX08();
 //AtSha204 sha = AtSha204();
 
 // the first time you upload the code, set this so it can be written to eeprom.
@@ -178,18 +175,20 @@ AtEcc108 sha = AtEcc108();
 TimeChangeRule usPDT = {"PDT", Second, dowSunday, Mar, 2, -420};
 TimeChangeRule usPST = {"PST", First, dowSunday, Nov, 2, -480};
 Timezone usPT(usPDT, usPST);
-Timezone myTZ(usPDT, usPST);
-#endif
 /*
 //Central European Time (Frankfurt, Paris)
 TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120};     //Central European Summer Time
 TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60};       //Central European Standard Time
 Timezone CE(CEST, CET);
+*/
+/*
 //US Eastern Time Zone (New York, Detroit)
 TimeChangeRule usEDT = {"EDT", Second, Sun, Mar, 2, -240};  //Eastern Daylight Time = UTC - 4 hours
 TimeChangeRule usEST = {"EST", First, Sun, Nov, 2, -300};   //Eastern Standard Time = UTC - 5 hours
 Timezone usET(usEDT, usEST);
 */
+Timezone myTZ(usPDT, usPST);
+#endif
 
 //If TimeChangeRules are already stored in EEPROM...
 #ifndef WRITE_TIMEZONE_EEPROM
@@ -373,36 +372,6 @@ void printTimeFromRTC(time_t tm) {
     Serial.println();
 }
 
-/*
-byte wakeupSha204() {
-  uint8_t response[SHA204_RSP_SIZE_MIN];
-  byte returnValue;
-  
-  returnValue = sha204dev.resync(4, &response[0]);
-  for (int i=0; i<SHA204_RSP_SIZE_MIN; i++) {
-    Serial.print(response[i], HEX);
-    Serial.print(" ");
-  }
-  Serial.println();
-  
-  return returnValue;
-}
-
-byte serialNumberSha204() {
-  uint8_t serialNumber[9];
-  byte returnValue;
-  
-  returnValue = sha204dev.serialNumber(serialNumber);
-  Serial.print("Serial: ");
-  for (int i=0; i<9; i++) {
-    Serial.print(serialNumber[i], HEX);
-    Serial.print(" ");
-  }
-  Serial.println();
- 
-  return returnValue;
-}
-*/
 
 void atmelRandom() {
     /* If you haven't personalized your device yet, you will recieve
@@ -411,9 +380,9 @@ void atmelRandom() {
        Success
        Otherwise, you'll get actual random bytes.
     */
-    if (0 == sha.getRandom(0)){
+    if (0 == ecc.getRandom(0)){
         Serial.println("Success with sha.getRandom:");
-        sha.rsp.dumpHex(&Serial);
+        ecc.rsp.dumpHex(&Serial);
         //random16_add_entropy(sha.rsp);
     }
     else{
@@ -421,19 +390,73 @@ void atmelRandom() {
     }
 }
 
+// Keep a record of key slot state for use in error reporting
+uint16_t slotLockState = 0xFF;  // Same as SlotLocked, bit per slot, 0=Locked
+uint16_t eccKeyState = 0x00;    // Bit per slot, 1 = ECC Key.
 
+/** isSlotLocked - use previously saved flags to test if a key slot has been locked.
+ * @param keyNum - Key nubmer to check
+ * @return true/false indicating lock state of key
+ */
+boolean isSlotLocked( uint8_t keyNum ) {
+  return slotLockState & (1 << keyNum ) ? false : true;
+}
+
+/** displayLockState - display the lock state for the specified zone
+ * @param zone - the zone to display, 0 for Config Zone, 1 for Data Zone
+ */
+void displayLockState( uint8_t zone ) {
+  Serial.print( ecc.is_locked( zone ) ? F("") : F(" not" ));
+  Serial.println(F(" Locked"));
+}
+/** displayData - Display packet data in hex.
+ *  @param rspPtr packet response pointer
+ *  @param bufLen Length of data to display
+ */
+void displayData( const uint8_t *rspPtr, uint8_t bufLen ) {
+  const uint8_t *bufPtr = rspPtr;
+  // Display serial number and add to serialNum buffer
+  for (int i = 0; i < bufLen; i++ ) {
+    if ( bufPtr[i] < 16 ) Serial.print(F("0"));
+    Serial.print(bufPtr[i], HEX);
+  }
+  Serial.println();
+}
+/** displayResponse - take a low I2C driver response code and display
+ *  meaningfull message. Checks key slot flags if needed
+ *  @param respCode - response code received from driver
+ *  @param keyNum - Key number of the slot being worked on
+ */
+void displayResponse( uint8_t respCode, uint8_t keyNum ) {
+  switch (respCode) {
+    case 0xD2:
+      Serial.print(F("CMD Fail - Parse Error"));
+      break;
+    case 0xD3:
+      Serial.print(F("CMD Fail - "));
+      Serial.print(isSlotLocked(keyNum) ? F("Slot locked") : F("No Private key") );
+      break;
+    case 0xE7:
+      Serial.print(F("No Response"));
+      break;
+    default:
+      Serial.print(respCode, HEX);
+  }
+  Serial.println();
+}
 // https://github.com/thiseldo/cryptoauth-arduino/blob/master/examples/Crypto_Examples/Crypto_Examples.ino
+
 /** menuGetInfo - The Chip Info menu action, display info about the chip
  */
-void menuGetInfo() {
-  Serial.println(F("\n\rChip Info"));
+void eccGetInfo() {
+  Serial.println(F("\n\rATECC Chip Info"));
   uint8_t serialNum[9];
 
   Serial.print(F("Serial Number: "));
-  uint8_t ret = sha.getSerialNumber();
+  uint8_t ret = ecc.getSerialNumber();
   if ( ret == 0 ) {
-    const uint8_t *bufPtr = sha.rsp.getPointer();
-    int bufLen = sha.rsp.getLength();
+    const uint8_t *bufPtr = ecc.rsp.getPointer();
+    int bufLen = ecc.rsp.getLength();
     // Display serial number and add to serialNum buffer
     for (int i = 0; i < bufLen; i++ ) {
       if ( i < 9)
@@ -447,6 +470,58 @@ void menuGetInfo() {
     Serial.println(ret, HEX);
   }
 
+  // Chip revision
+  Serial.print(F("Revision: "));
+  ret = ecc.getInfo(0x00, 0);
+  if ( ret == 0 ) {
+    displayData(ecc.rsp.getPointer(), 4);
+  } else {
+    Serial.print(F("Failed! "));
+    Serial.println(ret, HEX);
+  }
+
+  Serial.print(F("Config Zone is" ));
+  displayLockState(0);
+
+  Serial.print(F("Data Zone is" ));
+  displayLockState(1);
+
+  // Key validity check, E for ECC keys, - for anything else
+  Serial.println(F("                111111"));
+  Serial.println(F("      0123456789012345"));
+  Serial.print(F("Type: "));
+  for ( int k = 0; k < 16; k++ ) {
+    ret = ecc.getInfo(0x01, k);
+    if ( ret == 0 ) {
+      const uint8_t *rPtr = ecc.rsp.getPointer();
+      if ( *rPtr == 0x01 )  // Has a valid public or private ECC key
+        Serial.print(F("E"));
+      else
+        Serial.print(F("-"));
+    } else {
+      Serial.print(F("-"));
+    }
+  }
+  Serial.println();
+
+  // Display key lock state, Y for locked, - unlocked. Onlt applied to ECC keys
+  Serial.print(F("Lock: "));
+  uint8_t respCode = ecc.getKeySlotConfig();
+  if ( respCode != 0 ) {
+    Serial.print(F("Fail getKeySlotConfig "));
+    displayResponse(respCode, 0);
+  }
+  else
+  {
+    uint16_t lockState = 0xFFFF;
+    memcpy (&lockState, ecc.rsp.getPointer(), 2);
+    slotLockState = lockState;      // Save for later slot testing
+    for ( int k = 0; k < 16; k++ ) {
+      Serial.print(lockState & 0x01 ? F("-") : F("Y"));
+      lockState = lockState >> 1;
+    }
+    Serial.println();
+  }
 }
 
 void rainbow() 
@@ -581,7 +656,7 @@ void setup() {
   Wire.begin(MCU_I2C_NODE_ADDRESS); // Node Address is us, set to 8 by default above.
   // "Be sure to wake up device right as I2C goes up otherwise you'll have NACK issues"
   //sha204dev.init();
-  sha.enableDebug(&Serial);
+  ecc.enableDebug(&Serial);
   // power on the GPS, or power it off. Whatever. 
   if (GPS_ENABLED == 1) {
     digitalWrite(MCU_GPS_EN, HIGH);
@@ -606,7 +681,11 @@ void setup() {
 #ifdef WRITE_TIMEZONE_EEPROM
     myTZ.writeRules(100);    //write rules to EEPROM address 100
 #endif
-  
+
+  // ecc
+  eccGetInfo();
+  atmelRandom();
+
   if ( RTC.isRunning() ) {
     time_t powerDown, powerUp;    //power outage timestamps
     if ( RTC.powerFail(&powerDown, &powerUp) ) {
