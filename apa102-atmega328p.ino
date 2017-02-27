@@ -51,7 +51,6 @@ The primary 5V connects to the LED 5V via a 6A fuse. The fuse could be replaced 
 From this 5V we have a 3V3 RT9193 for the GPS.
 USB power is connected via a 500mA fuse directly to the USBASP and FT230.
 USB power also drives a 3V3 AMS117 for the CP2112 and TUSB.
-There's a solder jumper to connect the mega328's AREF to 5V.
 
 */
 
