@@ -128,6 +128,8 @@ uint8_t brightness = BRIGHTNESS;
 uint8_t actualBrightness = BRIGHTNESS;
 uint8_t previousBrightness = BRIGHTNESS;
 
+int tempC_9808;
+
 #define FRAMES_PER_SECOND  120
 CRGB leds[NUM_LEDS];
 
@@ -383,7 +385,7 @@ void atmelRandom() {
     if (0 == ecc.getRandom(0)){
         Serial.println("Success with sha.getRandom:");
         ecc.rsp.dumpHex(&Serial);
-        //random16_add_entropy(sha.rsp);
+        //random16_add_entropy(ecc.rsp);
     }
     else{
         Serial.println("Failure on sha.getRandom:");
@@ -536,6 +538,31 @@ void xmas() {
   fill_gradient(leds,70,CHSV(85,255,120),89,CHSV(0,255,255),SHORTEST_HUES); 
 }
 
+CRGBPalette16 myPalette;
+void tempAsColor() {
+  // "Forest, Clouds, Lava, Ocean, Rainbow, and Rainbow Stripes."
+  if ( tempC_9808 < 18 ) {
+    //fill_solid(leds, NUM_LEDS, CRGB::DarkGreen);
+    myPalette = OceanColors_p;
+  } else if (tempC_9808 > 30 ) {
+    myPalette = HeatColors_p;
+  } else {
+    //myPalette = RainbowStripesColors_p;
+    myPalette = ForestColors_p;
+   }
+    static byte heat[NUM_LEDS];
+    for( int j = 0; j < NUM_LEDS; j++) {
+      int y = random8(7);
+      heat[y] = qadd8( heat[y], random8(160,255) );
+      // Scale the heat value from 0-255 down to 0-240
+      // for best results with color palettes.
+      byte colorindex = scale8( heat[j], 240);
+      CRGB color = ColorFromPalette( myPalette, colorindex);
+      int pixelnumber;
+      leds[pixelnumber] = color;
+    }
+}
+
 void pink() {
  fill_solid(leds, NUM_LEDS, CRGB::LightPink);
 }
@@ -634,6 +661,14 @@ void juggle() {
   }
 }
 
+void getTempC() {
+  // Temperature sensor
+  Serial.print(F("Current Temperature: "));
+  sensor9808.setResolution(MCP9804::R_0_0625);
+  tempC_9808 = val_to_temp(sensor9808.readTemperature());
+  Serial.println(tempC_9808);
+}
+
 void setup() {
   // Eight second watchdog timer to reset the controller if we get stuck
   wdt_enable(WDTO_8S);
@@ -655,7 +690,6 @@ void setup() {
   // init i2c for everything else
   Wire.begin(MCU_I2C_NODE_ADDRESS); // Node Address is us, set to 8 by default above.
   // "Be sure to wake up device right as I2C goes up otherwise you'll have NACK issues"
-  //sha204dev.init();
   ecc.enableDebug(&Serial);
   // power on the GPS, or power it off. Whatever. 
   if (GPS_ENABLED == 1) {
@@ -672,11 +706,8 @@ void setup() {
     digitalWrite(LED_RED, LOW);
     delay(100);
   }
-  // Temperature sensor
-  Serial.print(F("Current Temperature: "));
-  sensor9808.setResolution(MCP9804::R_0_0625);
-  int tempC_9808 = val_to_temp(sensor9808.readTemperature());
-  Serial.println(tempC_9808);
+
+  getTempC();
 
 #ifdef WRITE_TIMEZONE_EEPROM
     myTZ.writeRules(100);    //write rules to EEPROM address 100
@@ -761,6 +792,10 @@ void loop() {
     case 7:
       pps_loop++;
       printTimeFromRTC(now());
+      break;
+    case 15:
+      pps_loop++;
+      getTempC();
       break;
     default: 
       break;
