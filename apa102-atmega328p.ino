@@ -129,6 +129,7 @@ uint8_t previousBrightness = BRIGHTNESS;
 
 int tempC_9808;
 
+
 #define FRAMES_PER_SECOND  120
 CRGB leds[NUM_LEDS];
 
@@ -204,18 +205,6 @@ volatile byte pps_loop = 0;
 volatile byte momentary_switch_loop = 0;
 byte previous_momentary_switch_loop = 0;
 
-void momentary_switch_interrupt() {
-  momentary_switch_loop++;
-  // mod N gives wraparound.
-  momentary_switch_loop = momentary_switch_loop % 8;
-}
-
-void pps_interrupt() {
-  pps_loop++;
-  if ( pps_loop > 53) {
-    pps_loop = 0;
-  }
-}
 
 time_t epochConverter(TinyGPSDate &d, TinyGPSTime &t) {
   // make the object we'll use
@@ -668,6 +657,25 @@ void getTempC() {
   Serial.println(tempC_9808);
 }
 
+// List of patterns to cycle through.  Each is defined as a separate function below.
+typedef void (*SimplePatternList[])();
+SimplePatternList gPatterns = { sinelonColorPot, blueish, speckled, januaryWithGlitter, xmasWithGlitter, sinelon, pink, juggle };
+
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+void momentary_switch_interrupt() {
+  //momentary_switch_loop++;
+  // mod N gives wraparound.
+  //momentary_switch_loop = momentary_switch_loop % 8;
+  momentary_switch_loop = (momentary_switch_loop + 1) % ARRAY_SIZE( gPatterns);
+}
+
+void pps_interrupt() {
+  pps_loop++;
+  if ( pps_loop > 53) {
+    pps_loop = 0;
+  }
+}
+
 void setup() {
   // Eight second watchdog timer to reset the controller if we get stuck
   wdt_enable(WDTO_8S);
@@ -852,33 +860,10 @@ void loop() {
   // This section is what makes colors show up. The value of the 
   // variable in this case/switch is set by the interrupt handler
   // attached to a physical momentary switch.
-  switch (momentary_switch_loop) {
-    case 1:
-      blueish();
-      break;
-    case 2:
-      speckled();
-      break;
-    case 3:
-      januaryWithGlitter();
-      break;
-    case 4:
-      xmasWithGlitter();
-      break;
-    case 5:
-      sinelon();
-      break;
-    case 6:
-      pink();
-      break;
-    case 7:
-      juggle();
-      break;
-    default: 
-      sinelonColorPot();
-      break;
-  }
+  // formerly a "switch (momentary_switch_loop)" but better dynamic method from DemoReel100
+  gPatterns[momentary_switch_loop]();
 
+  
   // this is a kind of visible watchdog for the main loop
   int outVal = yforx(x);
   analogWrite(LED_WHITE, outVal);
